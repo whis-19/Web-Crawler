@@ -1,13 +1,23 @@
 import os
 import requests
+import pandas as pd
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
 
 lock = threading.Lock()
+BASE_URL = "https://papers.nips.cc/"
+RESULTS_DIR = "./Scrap_Results"
+
+# Ensure base results directory exists
+if not os.path.exists(RESULTS_DIR):
+    os.makedirs(RESULTS_DIR)
 
 def fetch_page(url):
+    """Fetch the HTML content of a given URL."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
@@ -17,16 +27,62 @@ def fetch_page(url):
         print(f"Error fetching {url}: {e}")
         return None
 
-def extract_links(html, base_url):
-    links = []
+def extract_year_links(html):
+    """Extract links for different years."""
+    year_links = {}
+    if html:
+        soup = BeautifulSoup(html, 'html.parser')
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            if href.startswith("/paper_files/paper/"):
+                year = href.split("/")[-1]
+                full_url = urljoin(BASE_URL, href)
+                year_links[year] = full_url
+    return year_links
+
+def extract_paper_links(html, base_url):
+    """Extract links to individual papers."""
+    paper_links = []
     if html:
         soup = BeautifulSoup(html, 'html.parser')
         for link in soup.find_all('a', href=True):
             full_url = urljoin(base_url, link['href'])
-            links.append(full_url)
-    return links
+            paper_links.append(full_url)
+    return paper_links
+
+def save_links_to_file(links, filename):
+    """Save extracted links to a text file."""
+    try:
+        with lock:
+            with open(filename, "w") as file:
+                for link in links:
+                    file.write(link + "\n")
+    except Exception as e:
+        print(f"Error saving links to file: {e}")
+
+def process_year_links(year_links):
+    """Extract and save paper links for each year."""
+    df = pd.DataFrame(columns=['Year', 'URL'])
+    rows = []
+
+    for year, url in year_links.items():
+        year_folder = os.path.join(RESULTS_DIR, year)
+        os.makedirs(year_folder, exist_ok=True)
+
+        paper_html = fetch_page(url)
+        paper_links = extract_paper_links(paper_html, url)
+
+        paper_filename = os.path.join(year_folder, "paper_links.txt")
+        save_links_to_file(paper_links, paper_filename)
+
+        rows.append({'Year': year, 'URL': url})
+
+    df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+    df.to_csv(os.path.join(RESULTS_DIR, "year_links.csv"), index=False)
+    return df
 
 def extract_pdf_links(html, base_url):
+    """Extract PDF links from a paper's page."""
     pdf_links = []
     if html:
         soup = BeautifulSoup(html, 'html.parser')
@@ -37,25 +93,14 @@ def extract_pdf_links(html, base_url):
                 pdf_links.append(full_url)
     return pdf_links
 
-def save_links_to_file(links, filename):
-    directory = os.path.dirname(filename)
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-    try:
-        with lock:  
-            with open(filename, "a") as file:  
-                for link in links:
-                    file.write(link + "\n")
-    except Exception as e:
-        print(f"Error saving links to file: {e}")
-
-def download_pdf(pdf_url, download_directory):
+def download_pdf(pdf_url, download_directory, paper_name):
+    """Download a PDF file and save it with its paper name."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(pdf_url, headers=headers, stream=True)
         response.raise_for_status()
-        
-        pdf_name = pdf_url.split("/")[-1]
+
+        pdf_name = f"{paper_name}.pdf"  
         pdf_path = os.path.join(download_directory, pdf_name)
 
         with open(pdf_path, "wb") as pdf_file:
@@ -67,75 +112,59 @@ def download_pdf(pdf_url, download_directory):
     except requests.RequestException as e:
         print(f"Error downloading PDF {pdf_url}: {e}")
 
-def crawl_and_extract_initial_links(start_url):
-    html_content = fetch_page(start_url)
+def process_paper_link(year, paper_link):
+    """Process a single paper link: Extract and download PDFs."""
+    year_folder = os.path.join(RESULTS_DIR, year)
+    pdf_directory = os.path.join(year_folder, "PDFs")
+    os.makedirs(pdf_directory, exist_ok=True)
+
+    paper_name = paper_link.split("/")[-1].replace("-", "_")  
+    html_content = fetch_page(paper_link)
     if html_content:
-        links = extract_links(html_content, start_url)
-        save_links_to_file(links, "./Scrap_Results/links.txt")
-    else:
-        print("Could not fetch initial page content.")
+        pdf_links = extract_pdf_links(html_content, paper_link)
 
-def process_hash_links(links_chunk, pdf_filename, download_directory):
-    for link in links_chunk:
-        if "hash" in link:
-            print(f"Thread {threading.current_thread().name}: Processing link with hash: {link}")
-            html_content = fetch_page(link)
-            if html_content:
-                pdf_links = extract_pdf_links(html_content, link)
-                if pdf_links:
-                    print(f"Thread {threading.current_thread().name}: Found PDF links: {pdf_links}")
-                    save_links_to_file(pdf_links, pdf_filename)
-                    # Download PDFs
-                    for pdf_link in pdf_links:
-                        download_pdf(pdf_link, download_directory)
-                else:
-                    print(f"Thread {threading.current_thread().name}: No PDF links found on this page. Continuing to the next link.")
-            else:
-                print(f"Thread {threading.current_thread().name}: Could not fetch page content. Continuing to the next link.")
-        else:
-            print(f"Thread {threading.current_thread().name}: Skipping link (no hash): {link}")
+        with ThreadPoolExecutor(max_workers=50) as pdf_executor: 
+            futures = [pdf_executor.submit(download_pdf, pdf_link, pdf_directory, paper_name) for pdf_link in pdf_links]
 
+            for future in as_completed(futures):
+                future.result()  
 
-if __name__ == "__main__":
-    start_url = "https://papers.nips.cc/paper_files/paper/2023"
+def process_papers_for_year(year, paper_links):
+    """Process papers for a given year using a ThreadPoolExecutor."""
+    with ThreadPoolExecutor(max_workers=2000) as paper_executor:
+        futures = [paper_executor.submit(process_paper_link, year, paper_link) for paper_link in paper_links]
+
+        for future in as_completed(futures):
+            future.result()  
+
+def main():
     start_time = time.time()
+    print("Starting scraping...")
 
-    crawl_and_extract_initial_links(start_url)
+    main_page_html = fetch_page(BASE_URL)
+    year_links = extract_year_links(main_page_html)
+    df_years = process_year_links(year_links)
 
-    links_file = "./Scrap_Results/links.txt"
-    pdf_filename = "./Scrap_Results/pdf_links.txt"
-    download_directory = "./Scrap_Results/PDFs"  
+    with ThreadPoolExecutor(max_workers=10) as year_executor:  
+        year_futures = []
+        for _, row in df_years.iterrows():
+            year = row['Year']
+            paper_filename = os.path.join(RESULTS_DIR, year, "paper_links.txt")
 
-    if not os.path.exists(download_directory):
-        os.makedirs(download_directory)
+            try:
+                with open(paper_filename, "r") as f:
+                    paper_links = [line.strip() for line in f]
 
-    try:
-        with open(links_file, "r") as f:
-            links = [line.strip() for line in f]
-    except FileNotFoundError:
-        print(f"Error: Links file '{links_file}' not found. Exiting.")
-        exit()
+                year_futures.append(year_executor.submit(process_papers_for_year, year, paper_links))
+            except FileNotFoundError:
+                print(f"Error: Paper links file '{paper_filename}' not found.")
+                continue
 
-    num_threads = min(2000, len(links)) 
-    chunk_size = len(links) // num_threads
-    link_chunks = [links[i:i + chunk_size] for i in range(0, len(links), chunk_size)]
-
-    if len(links) % num_threads != 0:
-        link_chunks[-1].extend(links[len(link_chunks) * chunk_size:])
-
-    threads = []
-    for i in range(num_threads):
-        thread = threading.Thread(target=process_hash_links, args=(link_chunks[i], pdf_filename, download_directory), name=f"Thread-{i+1}")
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join()
+        for future in as_completed(year_futures):
+            future.result() 
 
     end_time = time.time()
-    total_time = end_time - start_time
+    print(f"Scraping complete in {end_time - start_time:.2f} seconds.")
 
-    print(f"PDF link extraction and downloading complete.")
-    print(f"Start time: {time.ctime(start_time)}")
-    print(f"End time: {time.ctime(end_time)}")
-    print(f"Total execution time: {total_time:.2f} seconds.")
+if __name__ == "__main__":
+    main()
