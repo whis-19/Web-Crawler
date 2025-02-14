@@ -1,0 +1,6 @@
+requests
+beautifulsoup4
+lxml
+threading
+multiprocessing
+urllib3
