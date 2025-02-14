@@ -12,7 +12,7 @@ This repository contains a Python-based web crawler designed to scrape metadata 
 ## Installation
 ### Prerequisites
 Ensure you have the following installed:
-- Python 3.x
+- Python 3.12
 - Required Python libraries (install via `requirements.txt`)
 
 ### Setup
@@ -25,7 +25,6 @@ Ensure you have the following installed:
    ```sh
    pip install -r requirements.txt
    ```
-
 ## Usage
 ### Running the Web Crawler
 To scrape paper metadata and download PDFs, run:
@@ -42,10 +41,9 @@ Modify the configuration variables in `main.py` to customize behavior:
 
 ## Code Structure
 - `main.py`: The entry point for running the web crawler.
-- `scraper.py`: Contains functions for scraping metadata.
-- `downloader.py`: Handles PDF downloads using multithreading.
-- `utils.py`: Helper functions for URL fetching and file management.
-
+- `annotator.py`: Does the annotation.
+- `crawler.py`: Handles PDF downloads using multithreading.
+- `imports.py`: Has all necessary imports.
 
 ## Contributing
 Contributions are welcome! Feel free to open an issue or submit a pull request.
