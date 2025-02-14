@@ -1,19 +1,21 @@
 from imports import *
-# --- Configuration for CSV Scraping ---
-BASE_URL = "https://papers.nips.cc/"
-START_YEAR = 2023
-END_YEAR = 2023
-MAX_PAPERS_PER_YEAR = 5  # Limit to 5 papers per year
-OUTPUT_DIR = "MetaData_Results"
 
-# --- Configuration for PDF Downloading ---
-RESULTS_DIR = "./Scrap_Results"
+# --- Configuration Settings ---
+BASE_URL = "https://papers.nips.cc/"  # Base URL for NeurIPS papers
+START_YEAR = 2023  # Start year for scraping
+END_YEAR = 2023  # End year for scraping
+MAX_PAPERS_PER_YEAR = 5  # Limit number of papers per year
+OUTPUT_DIR = "MetaData_Results"  # Directory to store CSV metadata
+RESULTS_DIR = "./Scrap_Results"  # Directory to store downloaded PDFs
 
 # --- Utility Functions ---
 def ensure_directory(path):
+    """Ensure the specified directory exists, create if missing."""
     os.makedirs(path, exist_ok=True)
 
+
 def fetch_page(url):
+    """Fetch the HTML content of a given URL with error handling."""
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
         response.raise_for_status()
@@ -22,16 +24,18 @@ def fetch_page(url):
         print(f"Error fetching {url}: {e}")
         return None
 
+
 def replace_illegal_chars(text):
+    """Remove non-ASCII characters and trim whitespace."""
     if not text:
         return "N/A"
     return re.sub(r'[^\x20-\x7E]', '', text).strip()
 
 # --- CSV Scraping Functions ---
 def get_paper_links(year):
+    """Retrieve paper links for a given year."""
     url = f"{BASE_URL}paper_files/paper/{year}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if response.status_code != 200:
         print(f"Failed to fetch {year} page (Status: {response.status_code})")
         return []
@@ -43,48 +47,46 @@ def get_paper_links(year):
         if link.get("href") and link.get("href").startswith("/paper_files/paper/") and link.get("href").endswith(".html")
     ]
 
-def scrape_year(year):
-    print(f"Scraping papers for {year}...")
 
+def scrape_year(year):
+    """Scrape metadata of papers for a given year and save it in a CSV file."""
+    print(f"Scraping papers for {year}...")
     paper_links = get_paper_links(year)
     if not paper_links:
         print(f"No papers found for {year}")
         return
     
     csv_file_path = os.path.join(OUTPUT_DIR, f"NeurIPS_{year}.csv")
-    
     with open(csv_file_path, 'w', newline='', encoding='utf-8') as csvfile:
         csv_writer = csv.writer(csvfile)
-
-        # Write header row
         csv_writer.writerow(["Sr. No", "Year", "Title", "Authors", "Abstract", "PDF Link"])
-
+        
         sr_no = 1
         papers_scraped = 0  # Counter for papers scraped this year
-
+        
         for paper_url in paper_links:
             if papers_scraped >= MAX_PAPERS_PER_YEAR:
                 print(f"Reached maximum papers ({MAX_PAPERS_PER_YEAR}) for {year}.")
-                break  # Stop scraping after reaching the limit
-
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(paper_url, headers=headers)
+                break  # Stop after reaching limit
+            
+            response = requests.get(paper_url, headers={"User-Agent": "Mozilla/5.0"})
             if response.status_code != 200:
                 print(f"Failed to fetch paper page: {paper_url} (Status: {response.status_code})")
                 continue
             
             soup = BeautifulSoup(response.text, "html.parser")
             
+            # Extract metadata
             title_tag = soup.find("h4")
             title = replace_illegal_chars(title_tag.text) if title_tag else "Unknown Title"
-
+            
             authors = "Unknown Authors"
             author_h4 = soup.find("h4", string="Authors")
             if author_h4:
                 author_p = author_h4.find_next_sibling("p")
                 if author_p:
                     authors = replace_illegal_chars(author_p.text)
-
+            
             abstract = "No Abstract Found"
             abstract_h4 = soup.find("h4", string="Abstract")
             if abstract_h4:
@@ -93,7 +95,7 @@ def scrape_year(year):
                     abstract = replace_illegal_chars(abstract_p.text)
             
             pdf_link = next((BASE_URL.rstrip("/") + link.get("href") for link in soup.find_all("a") if "Paper" in link.text), None)
-
+            
             if pdf_link:
                 csv_writer.writerow([sr_no, year, title, authors, abstract, pdf_link])
                 print(f"{year} | {sr_no}: {title} - Authors: {authors}")
@@ -103,29 +105,8 @@ def scrape_year(year):
                 print(f"PDF link not found for {paper_url}")
 
 # --- PDF Downloading Functions ---
-def extract_year_links(html):
-    year_links = {}
-    if html:
-        soup = BeautifulSoup(html, 'html.parser')
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if href.startswith("/paper_files/paper/"):
-                year = href.split("/")[-1]
-                year_links[year] = urljoin(BASE_URL, href)
-    return year_links
-
-def extract_paper_links(html):
-    paper_links = {}
-    if html:
-        soup = BeautifulSoup(html, 'html.parser')
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if href.startswith("/paper_files/paper/"):
-                paper_name = link.text.strip().replace(' ', '_').replace('/', '_')
-                paper_links[paper_name] = urljoin(BASE_URL, href)
-    return paper_links
-
 def extract_pdf_links(html):
+    """Extract PDF links from a given page."""
     pdf_links = []
     if html:
         soup = BeautifulSoup(html, 'html.parser')
@@ -134,63 +115,60 @@ def extract_pdf_links(html):
                 pdf_links.append(urljoin(BASE_URL, link['href']))
     return pdf_links
 
-def download_pdf(url, filepath, lock): # Add a lock
+
+def download_pdf(url, filepath, lock):
+    """Download a PDF file with threading and locking."""
     try:
-        response = requests.get(url, stream=True, timeout=10) # Add timeout
+        response = requests.get(url, stream=True, timeout=10)
         response.raise_for_status()
         with open(filepath, "wb") as file:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     file.write(chunk)
-        with lock: # Acquire the lock before printing
+        with lock:
             print(f"Downloaded: {filepath}")
     except requests.RequestException as e:
-        with lock: # Acquire the lock even if there's an error
+        with lock:
             print(f"Error downloading {url}: {e}")
 
-def process_paper(paper_name, paper_link, year_dir, lock): # Add the lock
+
+def process_paper(paper_name, paper_link, year_dir, lock):
+    """Process each paper: extract and download its PDFs."""
     html = fetch_page(paper_link)
     if html:
         pdf_links = extract_pdf_links(html)
-        threads = [] # Store the threads
+        threads = []
         for pdf_url in pdf_links:
             pdf_filename = os.path.join(year_dir, f"{paper_name}.pdf")
-            thread = threading.Thread(target=download_pdf, args=(pdf_url, pdf_filename, lock)) # Pass the lock
-            threads.append(thread) # Add thread to the list
+            thread = threading.Thread(target=download_pdf, args=(pdf_url, pdf_filename, lock))
+            threads.append(thread)
             thread.start()
-        for thread in threads: # Join all threads for this paper
+        for thread in threads:
             thread.join()
 
+
 def download_pdfs():
+    """Main function to orchestrate PDF downloading."""
     ensure_directory(RESULTS_DIR)
     main_page_html = fetch_page(BASE_URL)
-    year_links = extract_year_links(main_page_html)
     
-    for year, year_link in year_links.items():
-        if int(year) < END_YEAR or int(year) > START_YEAR:
-            continue
-        
-        year_dir = os.path.join(RESULTS_DIR, year)
+    lock = threading.Lock()
+    # Iterate through years
+    for year in range(START_YEAR, END_YEAR - 1, -1):
+        year_dir = os.path.join(RESULTS_DIR, str(year))
         ensure_directory(year_dir)
         
-        year_html = fetch_page(year_link)
-        paper_links = extract_paper_links(year_html)
-        
-        limited_paper_links = dict(list(paper_links.items())[:MAX_PAPERS_PER_YEAR])
-
-        lock = threading.Lock() # Create a lock for each year
-        for paper_name, paper_link in limited_paper_links.items():
+        year_html = fetch_page(f"{BASE_URL}paper_files/paper/{year}")
+        for paper_name, paper_link in extract_paper_links(year_html).items():
             process_paper(paper_name, paper_link, year_dir, lock)
 
+
 def crawler_main():
-    # --- CSV Scraping ---
-    YEARS = list(range(START_YEAR, END_YEAR - 1, -1))  # Generate years in reverse order
+    """Main function to execute CSV scraping and PDF downloading."""
     ensure_directory(OUTPUT_DIR)
-    with Pool(processes=len(YEARS)) as pool:
-        pool.map(scrape_year, YEARS)
-
+    with Pool(processes=(END_YEAR - START_YEAR + 1)) as pool:
+        pool.map(scrape_year, range(START_YEAR, END_YEAR - 1, -1))
+    
     print("CSV scraping completed for all years!")
-
-    # --- PDF Downloading ---
     download_pdfs()
-    print("PDF downloading initiated in the background!")
+    print("PDF downloading initiated!")
